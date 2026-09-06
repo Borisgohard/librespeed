@@ -1,0 +1,86 @@
+name: 完备性检查
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 运行本地单元测试和仓库完整性测试
+        run: python -m unittest discover -s tests -v
+      - name: 检查 Python 语法
+        run: python -m py_compile start.py new/prepare_runtime.py new/deploy_vps_pair.py new/interactive_vps_pair.py
+      - name: 验证首次真实依赖安装与安全取消
+        run: |
+          set +e
+          printf '\n3\ny\n' | python -B -S start.py
+          result=$?
+          set -e
+          test "$result" -eq 1
+          .venv/bin/python -c "import paramiko; print(paramiko.__version__)"
+          test ! -e new/.vps_token
+          test ! -e new/.vps_pair.json
+
+  windows-startup:
+    name: Windows 新手启动
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: 验证无配置启动、中文包装入口与隐私边界
+        run: |
+          python -B -m unittest discover -s tests -p test_startup.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -m unittest discover -s tests -p test_repository_integrity.py -v
+      - name: 验证 Windows 首次真实依赖安装
+        run: |
+          @('', '3', 'y') | python -B -S start.py
+          if ($LASTEXITCODE -ne 1) { throw '首次启动应在准备完成后安全取消' }
+          .\.venv\Scripts\python.exe -c "import paramiko; print(paramiko.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw '依赖导入失败' }
+          if ((Test-Path new/.vps_token) -or (Test-Path new/.vps_pair.json)) { throw '取消不应写入节点配置或令牌' }
+
+  shell-php-docker:
+    name: Shell、PHP 与镜像构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查所有 Shell 脚本语法
+        run: git ls-files -z '*.sh' | xargs -0 -n1 bash -n
+      - name: 检查双 VPS PHP 接口语法
+        run: find new/project/vps-agent -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: 验证 PHP 测速、认证跳转和错误响应
+        run: LIBRESPEED_TEST_PHP="$(command -v php)" python -m unittest discover -s tests -p test_agent_runtime.py -v
+      - name: 构建实际部署镜像
+        run: docker build --tag librespeed-vps:ci new/project
+
+  browser-tests:
+    name: 桌面和手机网页交互
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: 安装隔离的浏览器测试依赖
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser-tests" playwright@1.62.1
+          "$RUNNER_TEMP/browser-tests/node_modules/.bin/playwright" install --with-deps chromium
+      - name: 验证表单、报告导出和错误转义
+        run: NODE_PATH="$RUNNER_TEMP/browser-tests/node_modules" node tests/browser_smoke.cjs

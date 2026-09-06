@@ -1,0 +1,242 @@
+#!/bin/bash
+
+echo "Setting up docker env..."
+echo "MODE: $MODE"
+echo "USE_NEW_DESIGN: $USE_NEW_DESIGN"
+echo "SERVER_LIST_URL: $SERVER_LIST_URL"
+echo "WEBPORT: $WEBPORT"
+echo "REDACT_IP_ADDRESSES: $REDACT_IP_ADDRESSES"
+echo "DB_TYPE: $DB_TYPE"
+echo "ENABLE_ID_OBFUSCATION: $ENABLE_ID_OBFUSCATION"
+echo "GDPR_EMAIL: $GDPR_EMAIL"
+
+set -e
+#set -x
+
+is_alpine() {
+  [ -f /etc/alpine-release ]
+}
+
+html_escape() {
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' \
+    -e "s/'/\&#39;/g"
+}
+
+sed_escape() {
+  printf '%s\n' "$1" | sed 's/[&/\\]/\\&/g; s/\$/\\$/g'
+}
+
+# Cleanup
+rm -rf /var/www/html/*
+
+# Copy frontend files
+cp /speedtest/*.js /var/www/html/
+cp /speedtest/stability.html /var/www/html/
+cp /speedtest/vps.html /var/www/html/ 2>/dev/null || true
+if [ -d /speedtest/vps-agent ]; then
+  cp -r /speedtest/vps-agent /var/www/html/vps-agent
+fi
+
+# Copy design switch files
+cp /speedtest/config.json /var/www/html/
+cp /speedtest/design-switch.js /var/www/html/
+
+# Copy favicon
+cp /speedtest/favicon.ico /var/www/html/
+
+# Set custom webroot on alpine
+if is_alpine; then
+  echo "ALPINE IMAGE"
+  sed -i "s#\"/var/www/localhost/htdocs\"#\"/var/www/html\"#g" /etc/apache2/httpd.conf
+else
+  echo "DEBIAN IMAGE"
+fi
+
+
+# Copy servers.json for stability page (frontend/dual modes)
+if [[ "$MODE" == "frontend" || "$MODE" == "dual" ]]; then
+  cp /servers.json /var/www/html/servers.json
+fi
+
+# Set up backend side for standlone modes
+if [[ "$MODE" == "standalone" || "$MODE" == "dual" ]]; then
+  cp -r /speedtest/backend/ /var/www/html/backend
+  if [ ! -z "$IPINFO_APIKEY" ]; then
+    sed -i s/\$IPINFO_APIKEY\ =\ \'\'/\$IPINFO_APIKEY\ =\ \'$IPINFO_APIKEY\'/g /var/www/html/backend/getIP_ipInfo_apikey.php
+  fi
+fi
+
+if [ "$MODE" == "backend" ]; then
+  cp -r /speedtest/backend/* /var/www/html
+  if [ ! -z "$IPINFO_APIKEY" ]; then
+    sed -i s/\$IPINFO_APIKEY\ =\ \'\'/\$IPINFO_APIKEY\ =\ \'$IPINFO_APIKEY\'/g /var/www/html/getIP_ipInfo_apikey.php
+  fi
+fi
+
+# Set up index.php for frontend-only or standalone modes
+if [[ "$MODE" == "frontend" || "$MODE" == "dual" ||  "$MODE" == "standalone" ]]; then
+  # Copy design files (switcher + both designs)
+  cp /speedtest/index.html /var/www/html/
+  cp /speedtest/index-classic.html /var/www/html/
+  cp /speedtest/index-modern.html /var/www/html/
+  cp /speedtest/stability.html /var/www/html/
+  # Copy frontend assets directly to root-level subdirectories (no frontend/ parent dir)
+  mkdir -p /var/www/html/styling /var/www/html/javascript /var/www/html/images /var/www/html/fonts
+  cp -a /speedtest/frontend/styling/* /var/www/html/styling/
+  cp -a /speedtest/frontend/javascript/* /var/www/html/javascript/
+  cp -a /speedtest/frontend/images/* /var/www/html/images/
+  cp -a /speedtest/frontend/fonts/* /var/www/html/fonts/ 2>/dev/null || true
+
+  # Copy frontend config files
+  cp /speedtest/frontend/settings.json /var/www/html/settings.json 2>/dev/null || true
+  if [ -f /servers.json ]; then
+    echo "using mounted /servers.json for server-list.json"
+    cp /servers.json /var/www/html/server-list.json
+  else
+    echo "no /servers.json found, create one for local host"
+    # generate config for just the local server
+    echo '[{"name":"local","server":"/backend",  "dlURL": "garbage.php", "ulURL": "empty.php", "pingURL": "empty.php", "getIpURL": "getIP.php", "sponsorName": "", "sponsorURL": "", "id":1 }]' > /var/www/html/server-list.json
+  fi
+  if [ ! -z "$SERVER_LIST_URL" ]; then
+    echo "using SERVER_LIST_URL for frontend server list"
+    SERVER_LIST_URL_ESCAPED=$(printf '%s\n' "$SERVER_LIST_URL" | sed 's/[&/\\]/\\&/g; s/\$/\\$/g')
+    sed -i "s/var SPEEDTEST_SERVERS = \"server-list.json\";/var SPEEDTEST_SERVERS = \"$SERVER_LIST_URL_ESCAPED\";/" /var/www/html/index-modern.html
+    sed -i "s/var SPEEDTEST_SERVERS = \\[/var SPEEDTEST_SERVERS = \"$SERVER_LIST_URL_ESCAPED\";\\n\\t\\t\\/\\*/" /var/www/html/index-classic.html
+    sed -i "s/var SPEEDTEST_SERVERS = \"server-list.json\";/var SPEEDTEST_SERVERS = \"$SERVER_LIST_URL_ESCAPED\";/" /var/www/html/stability.html
+  fi
+
+  # The stability page reads the same local server list as the main UI when present.
+  if [ -f /var/www/html/server-list.json ]; then
+    cp /var/www/html/server-list.json /var/www/html/servers.json
+  fi
+
+  # Replace title placeholders if TITLE is set
+  if [ ! -z "$TITLE" ]; then
+    TITLE_ONE_LINE=${TITLE//$'\r'/}
+    TITLE_ONE_LINE=${TITLE_ONE_LINE//$'\n'/ }
+    TITLE_HTML_ESCAPED=$(html_escape "$TITLE_ONE_LINE")
+    TITLE_ESCAPED=$(sed_escape "$TITLE_HTML_ESCAPED")
+    sed -i "s/<title>LibreSpeed<\\/title>/<title>$TITLE_ESCAPED<\\/title>/g; s/<h1>LibreSpeed<\\/h1>/<h1>$TITLE_ESCAPED<\\/h1>/g" /var/www/html/index-classic.html
+    sed -i "s/<title>LibreSpeed<\\/title>/<title>$TITLE_ESCAPED<\\/title>/g" /var/www/html/index.html
+    sed -i "s/<title>LibreSpeed - Free and Open Source Speedtest<\\/title>/<title>$TITLE_ESCAPED - Free and Open Source Speedtest<\\/title>/g; s/<h1>Free and Open Source Speedtest\\.<\\/h1>/<h1>$TITLE_ESCAPED<\\/h1>/g" /var/www/html/index-modern.html
+  fi
+
+  # Replace modern page tagline if TAGLINE is set
+  if [ -n "$TAGLINE" ]; then
+    TAGLINE_ONE_LINE=${TAGLINE//$'\r'/}
+    TAGLINE_ONE_LINE=${TAGLINE_ONE_LINE//$'\n'/ }
+    TAGLINE_HTML_ESCAPED=$(html_escape "$TAGLINE_ONE_LINE")
+    TAGLINE_ESCAPED=$(sed_escape "$TAGLINE_HTML_ESCAPED")
+    sed -i "s/<p class=\"tagline\">No Flash, No Java, No Websockets, No Bullsh\\*t<\\/p>/<p class=\"tagline\">$TAGLINE_ESCAPED<\\/p>/g" /var/www/html/index-modern.html
+  fi
+
+  # Support legacy EMAIL env var as fallback for GDPR_EMAIL
+  if [ -z "$GDPR_EMAIL" ] && [ ! -z "$EMAIL" ]; then
+    echo "WARNING: EMAIL env var is deprecated, please use GDPR_EMAIL instead" >&2
+    GDPR_EMAIL="$EMAIL"
+    echo "GDPR_EMAIL: $GDPR_EMAIL"
+  fi
+
+  # Replace GDPR email placeholder if GDPR_EMAIL is set
+  if [ ! -z "$GDPR_EMAIL" ]; then
+    # Escape special sed characters: & (replacement), / (delimiter), \ (escape), $ (variable)
+    GDPR_EMAIL_ESCAPED=$(printf '%s\n' "$GDPR_EMAIL" | sed 's/[&/\\]/\\&/g; s/\$/\\$/g')
+
+    for html_file in /var/www/html/index-modern.html /var/www/html/index-classic.html; do
+      if [ -f "$html_file" ]; then
+        sed -i "s/TO BE FILLED BY DEVELOPER/$GDPR_EMAIL_ESCAPED/g; s/PUT@YOUR_EMAIL.HERE/$GDPR_EMAIL_ESCAPED/g" "$html_file"
+      fi
+    done
+  fi
+fi
+# Configure design preference via config.json
+if [ "$USE_NEW_DESIGN" == "true" ]; then
+  sed -i 's/"useNewDesign": false/"useNewDesign": true/' /var/www/html/config.json
+fi
+
+# Apply Telemetry settings when running in standalone or frontend mode and telemetry is enabled
+if [[ "$TELEMETRY" == "true" && ("$MODE" == "frontend" || "$MODE" == "standalone" || "$MODE" == "dual") ]]; then
+  cp -r /speedtest/results /var/www/html/results
+  sed -i 's/telemetry_level": ".*"/telemetry_level": "basic"/' /var/www/html/settings.json
+
+  if [ "$MODE" == "frontend" ]; then
+    mkdir /var/www/html/backend
+    cp /speedtest/backend/getIP_util.php /var/www/html/backend
+  fi
+
+  if [ "$DB_TYPE" == "mysql" ]; then
+    sed -i 's/$db_type = '\''.*'\''/$db_type = '\'$DB_TYPE\''/g' /var/www/html/results/telemetry_settings.php
+    sed -i 's/$MySql_username = '\''.*'\''/$MySql_username = '\'$DB_USERNAME\''/g' /var/www/html/results/telemetry_settings.php
+    sed -i 's/$MySql_password = '\''.*'\''/$MySql_password = '\'$DB_PASSWORD\''/g' /var/www/html/results/telemetry_settings.php
+    sed -i 's/$MySql_hostname = '\''.*'\''/$MySql_hostname = '\'$DB_HOSTNAME\''/g' /var/www/html/results/telemetry_settings.php
+    sed -i 's/$MySql_databasename = '\''.*'\''/$MySql_databasename = '\'$DB_NAME\''/g' /var/www/html/results/telemetry_settings.php
+    if [ "$DB_PORT" != "" ]; then
+      sed -i 's/$MySql_port = '\''.*'\''/$MySql_port = '\'$DB_PORT\''/g' /var/www/html/results/telemetry_settings.php
+    fi
+  elif [ "$DB_TYPE" == "postgresql" ]; then
+    sed -i 's/$db_type = '\''.*'\''/$db_type = '\'$DB_TYPE\''/g' /var/www/html/results/telemetry_settings.php
+    sed -i 's/$PostgreSql_username = '\''.*'\''/$PostgreSql_username = '\'$DB_USERNAME\''/g' /var/www/html/results/telemetry_settings.php
+    sed -i 's/$PostgreSql_password = '\''.*'\''/$PostgreSql_password = '\'$DB_PASSWORD\''/g' /var/www/html/results/telemetry_settings.php
+    sed -i 's/$PostgreSql_hostname = '\''.*'\''/$PostgreSql_hostname = '\'$DB_HOSTNAME\''/g' /var/www/html/results/telemetry_settings.php
+    sed -i 's/$PostgreSql_databasename = '\''.*'\''/$PostgreSql_databasename = '\'$DB_NAME\''/g' /var/www/html/results/telemetry_settings.php
+  else
+    sed -i s/\$db_type\ =\ \'.*\'/\$db_type\ =\ \'sqlite\'\/g /var/www/html/results/telemetry_settings.php
+  fi
+
+  # Override SQLite database path for Docker environment
+  # In Docker, we use /database/db.sql which is outside the web-accessible directory
+  sed -i s/\$Sqlite_db_file\ =\ .*\'/\$Sqlite_db_file=\'\\\/database\\\/db.sql\'/g /var/www/html/results/telemetry_settings.php
+  sed -i s/\$stats_password\ =\ \'.*\'/\$stats_password\ =\ \'$PASSWORD\'/g /var/www/html/results/telemetry_settings.php
+
+  if [ "$ENABLE_ID_OBFUSCATION" == "true" ]; then
+    sed -i s/\$enable_id_obfuscation\ =\ .*\;/\$enable_id_obfuscation\ =\ true\;/g /var/www/html/results/telemetry_settings.php
+    if [ ! -z "$OBFUSCATION_SALT" ]; then
+      if [[ "$OBFUSCATION_SALT" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        echo "<?php" > /var/www/html/results/idObfuscation_salt.php
+        echo "\$OBFUSCATION_SALT = $OBFUSCATION_SALT;" >> /var/www/html/results/idObfuscation_salt.php
+      else
+        echo "WARNING: Invalid OBFUSCATION_SALT format. It must be a hex string (e.g., 0x1234abcd). Using random salt." >&2
+      fi
+    fi
+  fi
+
+  if [ "$REDACT_IP_ADDRESSES" == "true" ]; then
+    sed -i s/\$redact_ip_addresses\ =\ .*\;/\$redact_ip_addresses\ =\ true\;/g /var/www/html/results/telemetry_settings.php
+  fi
+
+  mkdir -p /database/
+  if is_alpine; then
+    chown -R apache /database/
+  else
+    chown -R www-data /database/
+  fi
+fi
+
+if is_alpine; then
+  chown -R apache /var/www/html/*
+else
+  chown -R www-data /var/www/html/*
+fi
+
+# Allow selection of Apache port for network_mode: host
+if [ "$WEBPORT" != "80" ]; then
+  if is_alpine; then
+    sed -i "s/^Listen 80\$/Listen $WEBPORT/g" /etc/apache2/httpd.conf
+  else
+    sed -i "s/^Listen 80\$/Listen $WEBPORT/g" /etc/apache2/ports.conf
+    sed -i "s/*:80>/*:$WEBPORT>/g" /etc/apache2/sites-available/000-default.conf
+  fi
+fi
+
+echo "Done, Starting APACHE"
+
+# This runs apache
+if is_alpine; then
+  exec httpd -DFOREGROUND
+else
+  exec apache2-foreground
+fi

@@ -1,0 +1,74 @@
+FROM alpine:3.24
+RUN apk add --quiet --no-cache \
+    bash \
+    apache2 \
+    ca-certificates \
+    php \
+    php-apache2 \
+    php-ctype \
+    php-phar \
+    php-gd \
+    php-openssl \
+    php-pdo \
+    php-pdo_mysql \
+    php-pdo_pgsql \
+    php-pdo_sqlite \
+    php-pgsql \
+    php-session \
+    php-sqlite3
+
+RUN ln -sf /dev/stdout /var/log/apache2/access.log && \
+    ln -sf /dev/stderr /var/log/apache2/error.log
+
+# Prepare files and folders
+RUN mkdir -p /speedtest/
+
+# Copy sources
+COPY backend/ /speedtest/backend
+COPY frontend/ /speedtest/frontend
+
+COPY results/*.php /speedtest/results/
+COPY results/*.ttf /speedtest/results/
+
+COPY *.js /speedtest/
+COPY index.html /speedtest/
+COPY index-classic.html /speedtest/
+COPY index-modern.html /speedtest/
+COPY config.json /speedtest/
+COPY stability.html /speedtest/
+COPY favicon.ico /speedtest/
+
+COPY docker/entrypoint.sh /
+
+# Prepare default environment variables
+ENV TITLE=LibreSpeed
+ENV TAGLINE="No Flash, No Java, No Websockets, No Bullsh*t"
+ENV MODE=standalone
+ENV PASSWORD=password
+ENV TELEMETRY=false
+ENV ENABLE_ID_OBFUSCATION=false
+ENV REDACT_IP_ADDRESSES=false
+ENV WEBPORT=8080
+ENV USE_NEW_DESIGN=false
+
+# https://httpd.apache.org/docs/2.4/stopping.html#gracefulstop
+STOPSIGNAL SIGWINCH
+
+# Add labels for better metadata
+LABEL org.opencontainers.image.title="LibreSpeed"
+LABEL org.opencontainers.image.description="A Free and Open Source speed test that you can host on your server(s)"
+LABEL org.opencontainers.image.vendor="LibreSpeed"
+LABEL org.opencontainers.image.url="https://github.com/librespeed/speedtest"
+LABEL org.opencontainers.image.source="https://github.com/librespeed/speedtest"
+LABEL org.opencontainers.image.documentation="https://github.com/librespeed/speedtest/blob/master/doc_docker.md"
+LABEL org.opencontainers.image.licenses="LGPL-3.0-or-later"
+
+# Add health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${WEBPORT}/ || exit 1
+
+WORKDIR /var/www/html
+
+# Final touches
+EXPOSE ${WEBPORT}
+CMD ["bash", "/entrypoint.sh"]

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LibreSpeed 双 VPS 测速</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1c2430;
+      --muted: #637083;
+      --line: #d9e0e8;
+      --accent: #147d64;
+      --accent-dark: #0f5f4c;
+      --bad: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 28px auto;
+    }
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      font-size: 28px;
+      line-height: 1.2;
+      margin: 0;
+      letter-spacing: 0;
+    }
+    a { color: var(--accent-dark); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 11px;
+      font-size: 14px;
+      color: var(--text);
+      background: #fff;
+    }
+    .actions {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      padding: 10px 14px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #9aa7b5;
+      cursor: wait;
+    }
+    .secondary {
+      background: #e9eef3;
+      color: var(--text);
+    }
+    .status {
+      color: var(--muted);
+      min-height: 20px;
+      font-size: 14px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .result h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .metric {
+      border-left: 2px solid var(--line);
+      padding: 12px;
+      min-height: 92px;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1.1;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+    .metric small {
+      color: var(--muted);
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 380px;
+      overflow: auto;
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 12px;
+    }
+    .error { color: var(--bad); }
+    @media (max-width: 760px) {
+      header, form, .grid, .metrics { grid-template-columns: 1fr; }
+      header { display: grid; }
+      main { width: min(100vw - 20px, 1120px); margin: 16px auto; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>LibreSpeed 双 VPS 测速</h1>
+      <a href="index.html">LibreSpeed</a>
+    </header>
+
+    <section class="panel">
+      <form id="pair-form">
+        <label>
+          固定端地址
+          <input id="fixed" name="fixed" autocomplete="off" required readonly />
+        </label>
+        <label>
+          测试端地址
+          <input id="target" name="target" autocomplete="off" placeholder="http://198.51.100.20:8080" required />
+        </label>
+        <label>
+          代理访问令牌
+          <input id="token" name="token" type="password" autocomplete="off" required />
+        </label>
+        <label>
+          下载数据量（MiB）
+          <input id="download" type="number" value="64" min="1" max="1024" step="1" required />
+        </label>
+        <label>
+          上传数据量（MiB）
+          <input id="upload" type="number" value="32" min="1" max="256" step="1" required />
+        </label>
+        <label>
+          延迟采样（次）
+          <input id="samples" type="number" value="10" min="3" max="60" step="1" required />
+        </label>
+        <label>
+          单项超时（秒）
+          <input id="timeout" type="number" value="60" min="5" max="300" step="1" required />
+        </label>
+        <div class="actions">
+          <button id="start" type="submit">开始双向测试</button>
+          <button id="copy" class="secondary" type="button" disabled>复制 JSON</button>
+          <button id="download-report" class="secondary" type="button" disabled>下载报告</button>
+          <span class="status" id="status"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="grid">
+      <div class="panel result">
+        <h2>固定端到测试端</h2>
+        <div class="metrics" id="forward"></div>
+      </div>
+      <div class="panel result">
+        <h2>测试端到固定端</h2>
+        <div class="metrics" id="reverse"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <pre id="json">{}</pre>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fixed = $("fixed");
+    const target = $("target");
+    const token = $("token");
+    const status = $("status");
+    const start = $("start");
+    const copy = $("copy");
+    const downloadReport = $("download-report");
+    const json = $("json");
+    let lastReport = null;
+
+    fixed.value = window.location.origin;
+
+    function metric(label, value, unit, sub) {
+      const row = document.createElement('div');
+      row.className = 'metric';
+      for (const [tag, text] of [['span', label], ['strong', value], ['small', unit + (sub ? ' · ' + sub : '')]]) {
+        const item = document.createElement(tag);
+        item.textContent = text ?? '未返回';
+        row.append(item);
+      }
+      return row;
+    }
+
+    function renderOne(id, result) {
+      const box = $(id);
+      const data = result && result.result ? result.result : result;
+      if (!data || !data.download && !data.upload && !data.latency) {
+        box.replaceChildren(metric("状态", "未完成", "", data && (data.message || data.error) || ""));
+        return;
+      }
+      const dl = data.download || {};
+      const ul = data.upload || {};
+      const lt = data.latency || {};
+      box.replaceChildren(...[
+        metric("下载速度", dl.status === "ok" ? dl.mbps : "失败", "兆比特每秒", dl.seconds ? `${dl.seconds} 秒` : ""),
+        metric("上传速度", ul.status === "ok" ? ul.mbps : "失败", "兆比特每秒", ul.seconds ? `${ul.seconds} 秒` : ""),
+        metric("平均延迟 / 抖动", lt.status === "ok" ? `${lt.avgMs} / ${lt.jitterMs}` : "失败", "毫秒", lt.lossPct !== undefined ? `请求失败 ${lt.lossPct}%` : "")
+      ]);
+    }
+
+    $("pair-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      start.disabled = true;
+      copy.disabled = true;
+      downloadReport.disabled = true;
+      lastReport = null;
+      status.textContent = "正在测试";
+      status.className = "status";
+      json.textContent = "{}";
+      $("forward").innerHTML = "";
+      $("reverse").innerHTML = "";
+      try {
+        const payload = {
+          fixed: fixed.value.trim(),
+          target: target.value.trim(),
+          timeoutSeconds: Number($("timeout").value),
+          downloadMegabytes: Number($("download").value),
+          uploadMegabytes: Number($("upload").value),
+          pingCount: Number($("samples").value)
+        };
+        const destination = new URL(payload.target);
+        if (!['http:', 'https:'].includes(destination.protocol) || destination.username || destination.password
+            || destination.search || destination.hash || destination.origin === window.location.origin) {
+          throw new Error('请输入另一台节点的完整 HTTP/HTTPS 地址，不要包含账号或查询参数。');
+        }
+        if (!window.confirm(`本轮预计在两台 VPS 之间传输 ${2 * (payload.downloadMegabytes + payload.uploadMegabytes)} MiB 数据，开始测速？`)) {
+          status.textContent = '已取消';
+          return;
+        }
+        const response = await fetch("vps-agent/pair.php", {
+          method: "POST",
+          redirect: 'error',
+          headers: {
+            "Content-Type": "application/json",
+            "X-LibreSpeed-Token": token.value.trim()
+          },
+          body: JSON.stringify(payload)
+        });
+        const rawReport = await response.json();
+        const secret = token.value.trim();
+        const redact = (value) => {
+          if (typeof value === 'string') return value.split(secret).join('[已隐去令牌]');
+          if (Array.isArray(value)) return value.map(redact);
+          if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key), redact(item)]));
+          return value;
+        };
+        const report = redact(rawReport);
+        lastReport = report;
+        json.textContent = JSON.stringify(report, null, 2);
+        renderOne("forward", report.forward);
+        renderOne("reverse", report.reverse);
+        status.textContent = response.ok && report.status === "ok" ? "已完成" : "失败";
+        status.className = response.ok && report.status === "ok" ? "status" : "status error";
+        copy.disabled = false;
+        downloadReport.disabled = false;
+      } catch (error) {
+        status.textContent = "失败";
+        status.className = "status error";
+        json.textContent = JSON.stringify({ status: "error", message: String(error) }, null, 2);
+      } finally {
+        start.disabled = false;
+      }
+    });
+
+    copy.addEventListener("click", async () => {
+      if (!lastReport) return;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(JSON.stringify(lastReport, null, 2));
+        } else {
+          const range = document.createRange();
+          range.selectNodeContents(json);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          if (!document.execCommand('copy')) throw new Error('当前浏览器不允许复制，请点击下载报告');
+          selection.removeAllRanges();
+        }
+        status.textContent = "已复制";
+      } catch (error) {
+        status.textContent = String(error.message || error);
+      }
+    });
+
+    downloadReport.addEventListener('click', () => {
+      if (!lastReport) return;
+      const url = URL.createObjectURL(new Blob([JSON.stringify(lastReport, null, 2)], {type: 'application/json'}));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'librespeed-report-' + Date.now() + '.json';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+  </script>
+</body>
+</html>

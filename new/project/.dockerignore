@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!index-modern.html
+!index-classic.html
+!vps.html
+!docker/
+!docker/entrypoint.sh
+!vps-agent/
+!vps-agent/*.php
